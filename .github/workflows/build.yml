@@ -1,0 +1,80 @@
+name: thead-u-boot-build
+
+on:
+  push:
+    tags:
+      - '*'
+    branches:
+      - '*'
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
+
+env:
+  xuantie_toolchain: https://occ-oss-prod.oss-cn-hangzhou.aliyuncs.com/resource//1698113812618
+  toolchain_file_name: Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.8.0-20231018.tar.gz
+  mainline_toolchain: https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2023.10.18
+  mainline_toolchain_file_name: riscv64-glibc-ubuntu-22.04-gcc-nightly-2023.10.18-nightly.tar.gz
+  wget_alias: 'wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 0'
+  ARCH: riscv
+  CROSS_COMPILE: riscv64-unknown-linux-gnu-
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [thead-gcc, gcc-13]
+
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install software
+        run: |
+              sudo apt update && \
+              sudo apt install -y gdisk dosfstools g++-12-riscv64-linux-gnu build-essential \
+                                  libncurses-dev gawk flex bison openssl libssl-dev tree \
+                                  dkms libelf-dev libudev-dev libpci-dev libiberty-dev autoconf device-tree-compiler
+
+      - name: Checkout uboot
+        uses: actions/checkout@v4
+
+      - name: uboot compile
+        run: |
+              mkdir output
+              if [[ ${{ matrix.name }} = "thead-gcc" ]]; then
+                ${wget_alias} ${xuantie_toolchain}/${toolchain_file_name}
+                tar -xvf ${toolchain_file_name} -C /opt
+                export PATH="/opt/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.8.0/bin:$PATH"
+              else
+                ${wget_alias} ${mainline_toolchain}/${mainline_toolchain_file_name}
+                tar -xvf ${mainline_toolchain_file_name} -C /opt
+                export PATH="/opt/riscv/bin:$PATH"
+              fi
+              ${CROSS_COMPILE}gcc -v
+
+              pushd $PWD
+                make light_lpi4a_defconfig
+                make -j$(nproc)
+                find . -name "u-boot-with-spl.bin" | xargs -I{} cp -av {} ${GITHUB_WORKSPACE}/output/u-boot-with-spl-lpi4a.bin
+                make clean
+                make light_lpi4a_android_defconfig
+                make -j$(nproc)
+                find . -name "u-boot-with-spl.bin" | xargs -I{} cp -av {} ${GITHUB_WORKSPACE}/output/u-boot-with-spl-lpi4a-android.bin
+              popd
+              tree ${GITHUB_WORKSPACE}/output
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v3
+        with:
+          name: thead-u-uboot-${{ matrix.name }}
+          path: output/*.bin
+          retention-days: 30
+
+      - name: 'Create release by tag'
+        uses: softprops/action-gh-release@v1
+        if: ${{ startsWith(github.ref, 'refs/tags/') && matrix.name == 'thead-gcc' }}
+        with:
+          files: output/*.bin
+          token: ${{ secrets.GITHUB_TOKEN }}
